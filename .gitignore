@@ -2,3 +2,4 @@
 *.zip
 *.doc
 *.docx
+*\.ipynb_checkpoints
