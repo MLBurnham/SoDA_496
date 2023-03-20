@@ -1,0 +1,245 @@
+---
+title: "R Notebook"
+output: 
+  html_notebook
+---
+```{r results='hide'}
+library(ggplot2)
+library(astsa)
+library(forecast)
+library(dplyr)
+library(tidyr)
+```
+# Managing Date Variables
+```{r}
+# Data import
+df <- read.csv('simulated_data.csv')
+approval <- read.csv('pres_approval.csv')
+# dates are often imported as strings. Manipulating data types and formats is almost always a part of working with time series.
+print(class(df$date))
+print(class(approval$timestamp))
+```
+## Coercing dates
+```{r}
+# as.Date() can coerce a string to a date
+df$date <- as.Date(df$date)
+
+# Often you will want to change the format of a date. To do this, you can use format codes which will work with most programming languages, including R and Python. Format codes can be easily found online: https://www.ibm.com/docs/en/cmofz/10.1.0?topic=SSQHWE_10.1.0/com.ibm.ondemand.mp.doc/arsa0257.htm
+df$date2 <- format(df$date, '%m/%d/%Y')
+df$date3 <- format(df$date, '%b %d %Y')
+
+# when coercing a string to a date you will often need to specify the format of the date
+approval$timestamp <- as.Date(approval$timestamp, format = '%d %b %Y')
+
+# One particularly useful format for storing dates is the Unix Epoch. It is the number of seconds that have passed since midnight (UTC) January 1, 1970. The POSIXct format is a widely adopted standard that stores dates based on the Unix Epoch.
+df$posix <- as.POSIXct(df$date)
+# For date storage purposes, it's often best to just store a date in terms of seconds.
+df$unix_epoch <- as.numeric(as.POSIXct(df$date))
+```
+
+# Plotting
+
+Plotting you data is an important part of your analysis in time series, more so than in a cross-sectional data context. This is because plots allow you to see the dynamics of the series that are difficult to spot with numerical summaries of the data.
+```{r}
+par(mfrow=c(2,2))
+# what's wrong with this  first plot?
+plot(approval$timestamp, approval$approval, type = 'l', main = 'Presidential Approval') 
+# That data wasn't ordered by date. So let's reorder it and try the plot again.
+approval <- approval[order(approval$timestamp),]
+plot(approval$timestamp, approval$approval, type = 'l', main = 'Presidential Approval') 
+
+# Let's plot the other series as well
+plot(df$date, df$b, type = 'l', main = 'Series B')
+plot(df$date, df$z, type = 'l', main = 'Series Z')
+```
+
+Often you may want to plot two series side-by-side. To do this we first need to transform the data.
+```{r}
+df2 <- df %>%
+  select(date, b, z) %>%
+  gather(key = "series", value = "value", -date)
+
+head(df2)
+```
+
+The we can plot it using ggplot
+```{r}
+ggplot(df2, aes(x = date, y = value)) + 
+  geom_line(aes(color = series), size = .6) +
+   scale_x_date(date_breaks = "18 month", date_labels = "%b\n%Y")+ # Notice date formatting codes here
+  scale_color_manual(values = c("#00AFBB", "#E7B800"),name = NULL, 
+  labels =  c("B", "Z")) +
+  theme_minimal() +
+  labs(title="Series B and Z",
+       x="Month", 
+       y=NULL, 
+       subtitle="1995 through 2011") +
+  theme(legend.text = element_text(size=8),
+        legend.position = "bottom")
+```
+Note that the above isn't a particularly good plot because the difference in scale between the two series distorts some of the features. In particular, the large shock in series B that is obvious in other plots is much more muted here.
+
+After plotting your data, ask yourselves a few questions about the series.
+
+- Do the mean and variance appear constant?
+- Does it trend?
+- Is there seasonality to the data?
+- Are there any structural breaks?
+
+In addition to basic line plots, there are a few other plots that can help us evaluate our data.
+
+### Lag plots
+
+Lag plots are a simple scatter plot between $y_t$ and $y_{t-s}$. These provide insight into how correlated the series is across time.
+
+Why does Presidential Approval appear to exhibit strong correlation in the lag plots vs. Series B when it does not appear to trend any more in the above line plots? Because of different sampling intervals. Series B is monthly data while approval is daily. While Series B might have 2-3 points between peaks, Approval might have dozens.
+```{r}
+lag.plot(df$b, lags = 6, diag=TRUE,diag.col="red", main = "Series B")
+lag.plot(df$z, lags = 6, diag=TRUE,diag.col="red", main = "Series Z")
+lag.plot(approval$approval, lags = 6, diag=TRUE,diag.col="red", main = 'Presidential Approval')
+```
+
+The astsa  package also has a lagplot function for more attractive plots.
+
+```{r}
+lag1.plot(df$b,max.lag = 6)
+lag1.plot(df$z,max.lag = 6)
+lag1.plot(approval$approval,max.lag = 6)
+```
+
+### Assessing Normality
+
+Often we will want to assess the normality of our data or model residuals. Simple histograms can be helpful here:
+
+```{r}
+hist(df$b)
+hist(df$z)
+hist(approval$approval)
+```
+
+Probably a better way to do this is with a Q-Q plot:
+
+```{r}
+qqnorm(df$b,
+       main = 'Normal Q-Q plot for distribution of B',
+       pch = 20,
+       col="2",
+       cex.main = .8
+)
+qqline(y=df$b)
+
+qqnorm(df$z,
+       main = 'Normal Q-Q plot for distribution of Z',
+       pch = 20,
+       col="2",
+       cex.main = .8
+)
+qqline(y=df$z)
+
+qqnorm(approval$approval,
+       main = 'Normal Q-Q plot for distribution of Approval',
+       pch = 20,
+       col="2",
+       cex.main = .8
+)
+qqline(y=approval$approval)
+```
+Quantiles divide a distribution into equal intervals. Each interval should have an equal share of the population. A QQ plot divides you data into quantiles, and compares the quantile cut points in your data against that of a theoretical distribution, in this case the normal distribution. If your data follows a normal distribution, quantile cut points should occur in roughly the same area and points should plot along a straight line.
+
+
+# Series "b"
+What we want to model:
+$Y_t = \sum_{i - 1}^p\rho_iY_{t-i} + \sum_{i-1}^q\phi_i\epsilon_{t-i} + \epsilon_t$
+
+Our goal is to identify how many lags of the dependent variable we should control for, and how many lags of the error term we should control for.
+
+Let's start working towards a model for series B. First we create a basic plot of the series.
+```{r}
+ggplot(df, aes(x = date, y = b)) + 
+  geom_line(size = .6) +
+   scale_x_date(date_breaks = "year", date_labels = "%Y")+
+  theme_light() +
+  labs(title='Time Series "b"',
+       x="Date", 
+       y='"b" Value', 
+       subtitle="June 1995 to January 2012") +
+  theme(legend.text = element_text(size=8),
+        legend.position = "bottom")
+```
+
+One quick test we can run is the Ljung-Box test which tests if the series is white noise. If the series is white noise, we can stop here. The null hypothesis of the test is that the series is white noise. Given our p-value we reject the null and conclude the series probably is not white noise.
+```{r}
+Box.test(df$b, 24, "Ljung")
+```
+
+Now let's look at the lag plots so that we can get a sense of the inertia in the dataset.
+
+```{r}
+lag1.plot(df$b,max.lag = 6)
+```
+
+One of the most useful tools is the autocorrelation function (ACF) and the partial autocorrelation function (PACF). As the name suggests, they show the autocorrelation and the partial autocorrelation for some number of lags. In an AR series, you should see exponential decay in the ACF and a few spikes in the PACF that then "shut off". In an MA series you will see the opposite, exponential decay in the PACF and a few significant spikes in the ACF. An ARMA process will show exponential decay in both the ACF and the PACF.
+
+
+
+```{r}
+acf2(df$b, max.lag = 24, main = 'Series "b"')
+```
+
+Here I estimate two models for the series, an AR(2) model and an ARMA(1,1) model as both seem like reasonable interpretations of the data. We can fit a model with the sarima() function and get information on the residuals to assess the fit of the models. Looking at the residual plots below, both models appear to fit the data well as the residuals look like white noise. 
+```{r echo=FALSE, results='hide', fig.keep='all'}
+bfit.ar2 <- sarima(df$b, p=2, d=0, q=0, details=TRUE)
+bfit.arma <- sarima(df$b, p=1, d=0, q=1, details=TRUE)
+```
+Additionally, I examine the coefficients from the two models. The AR(2) model has significant coefficients that are < 1, indicating a stationary process.
+```{r}
+bfit.ar2$ttable
+```
+
+The ARMA(1,1) model shows similar results.
+```{r}
+bfit.arma$ttable
+```
+
+On initial examination, both models seem to fit the data equally well. To test the models further I fit each to a subset of the data and test them on their out of sample performance. 
+
+```{r}
+# convert to time series
+b.ts <- ts(df['b'], start = c(1995, 6), end = c(2012, 2), freq = 12)
+
+# train and test AR(2) model
+bfit.ar2train <- Arima(window(b.ts,
+          start=c(1995,6),end=c(2007,1)),
+          order=c(2,0,0))
+
+bfit.ar2test <- Arima(window(b.ts, 
+                  start=c(1995,6),
+                  end=c(2007,1)),
+                  model = bfit.ar2train)
+
+# train and test ARMA(1,1) model
+bfit.armatrain <- Arima(window(b.ts,
+          start=c(1995,6),end=c(2007,1)),
+          order=c(1,0,1))
+
+bfit.armatest <- Arima(window(b.ts, 
+                  start=c(1995,6),
+                  end=c(2007,1)),
+                  model = bfit.armatrain)
+```
+ 
+AR(2) OOS accuracy:
+```{r}
+accuracy(bfit.ar2test)
+```
+ARMA(1,1) OOS accuracy:
+```{r}
+accuracy(bfit.armatest)
+```
+The ARMA model appears to fit slightly better on most metrics, however there is no clear winner between the two. In this case I would rely on theory to select which model to use. However, since nothing is known about the data I would simply select the simpler of the two. In this case, the AR(2) model.
+
+```{r}
+Box.test(resid(bfit.ar2$fit), 
+         lag=24,fitdf=2,type="Ljung")
+
+```
