@@ -1,0 +1,138 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(astsa)
+library(dynlm)
+library(dplyr)
+library(lmtest)
+```
+
+
+```{r}
+#AppEcon <- read.csv('AppEcon.csv')
+load('TSRegressionApproval.RData')
+AddEcon <- AppEcon %>%
+  filter(year > 1978 & year <= 2020)
+#AppEcon$date <- as.Date(AppEcon$date)
+#AppEcon <- AppEcon[complete.cases(AppEcon),] # drop some missing data
+head(AppEcon)
+```
+
+
+```{r}
+plot(x = AppEcon$date, y = AppEcon$Approving, type = 'l', xlab = 'Date', ylab = 'Approval')
+```
+
+```{r}
+acf2(AppEcon$Approving)
+```
+
+
+```{r}
+sarima(AppEcon$Approving, p = 1, d = 0, q = 1, details = TRUE)
+```
+
+
+```{r}
+AppEcon.ts <- ts(AppEcon, start = c(1978,1), end = c(2020,12), freq = 12)
+```
+
+# The Autoregressive Distributed Lag Model
+
+```{r}
+ADL1 <- dynlm(Approving~L(Approving, 1) + 
+                DSPIC96_pc_pca + L(DSPIC96_pc_pca, 1) + L(DSPIC96_pc_pca, 2) +
+                lei_pc + L(lei_pc, 1) + L(lei_pc, 2) +
+                cei_pc + L(cei_pc, 1) + L(cei_pc, 2) +
+  Reagan + BushI + Clinton + BushII + Obama + Trump +
+  Honey + Inaug + RAss + IraqKuwait + Desert + Lehman + 
+  Sept11 + Mueller + Impeach1 + Impeach2 + CovidP + CovidS, data = AppEcon.ts)
+
+summary(ADL1)
+```
+# Plot fitted values for diagnostics
+
+If the model fits well then the fitted values and the actual values should plot randomly around a 45 degree line.
+```{r}
+plot(ADL1$fitted.values, model.frame(ADL1)$Approving)
+```
+If we plot the residuals against the fitted values then they should plot randomly around zero. Any patterns in the residuals are an indication of misspecification.
+```{r}
+plot(ADL1$fitted.values, ADL1$residuals)
+```
+
+The ACF and the PACF on the residuals can likewise be informative. 
+```{r}
+acf2(ADL1$residuals)
+```
+
+
+# RESET test
+
+The RESET test is a test for misspecification due to an incorrect functional form and omitted variables. It estimates a regression of $y_t$ on the squared residuals of the original model. Then it uses an F-test to evaluate the null hypothesis that the coefficients are all zero. Rejecting the null indicates possible non-linearity or omitted variables.
+
+```{r}
+resettest(ADL1, power = 2, type = 'regressor', data = APPEcon.ts)
+```
+
+# Testing Model Specification
+
+As with other forms of regression, it's good to have a parsimonious model. It's a little more difficult to arrive at one in time series because it's not always clear how many lags we should incorporate into the model and theory will rarely provide clear answers. An effective approach to solving this is to start with a high number of lags and then narrow down the model.
+
+Lets fit a model with more lags
+```{r}
+ADL.1.3 <- dynlm(Approving~L(Approving,1) +  
+                     DSPIC96_pc_pca +L(DSPIC96_pc_pca, c(1,2,3))+ 
+                     lei_pc + L(lei_pc, c(1,2,3)) + 
+                     cei_pc + L(cei_pc, c(1,2,3)) + 
+                     Reagan + BushI + Clinton + BushII +  Honey + Inaug +  RAss + IraqKuwait + 
+                     Desert + Sept11 + BushJan +
+                     hostages, start=c(1978,4), end=c(2020,12), data=AppEcon.ts)
+
+summary(ADL.1.3)
+```
+
+And fit an alternative model with fewer lags
+```{r}
+ADL.1.2 <- dynlm(Approving~L(Approving,1) +  
+                     DSPIC96_pc_pca +L(DSPIC96_pc_pca, c(1,2))+ 
+                     lei_pc + L(lei_pc, c(1,2)) + 
+                     cei_pc + L(cei_pc, c(1,2)) + 
+                     Reagan + BushI + Clinton + BushII + Honey + Inaug +  RAss + IraqKuwait + 
+                     Desert + Sept11 + BushJan +
+                     hostages, start=c(1978,4), end=c(2020,12), data=AppEcon.ts)
+```
+
+
+To test which model is better, we can use an F test. The F test will test if the coefficients on the additional lags are zero. In other words, the null hypothesis is that the additional lags no effect on the predicted value. If we reject the null, we should keep the additional lags. If we fail to reject the null, then we should choose the model with fewer lags.
+```{r}
+anova(ADL.1.3, ADL.1.2)
+```
+
+Before we adopt a model we want to test if it's "dynamically complete", meaning if we are adequately modeling the dynamics of the series. A quick approach to this is the Breusch-Godfrey test. Under the null hypothesis of the test there is no serial correlation up to order $n$.
+```{r}
+bgtest(ADL.1.2, order = 24, type = 'Chisq')
+```
+
+
+We can then repeat the F test with more parsimonious models.
+
+```{r}
+ADL.1.1 <- dynlm(Approving~L(Approving,1) +  
+                     DSPIC96_pc_pca +L(DSPIC96_pc_pca, c(1))+ 
+                     lei_pc + L(lei_pc, c(1)) + 
+                     cei_pc + L(cei_pc, c(1)) + 
+                     Reagan + BushI + Clinton + BushII + Obama + 
+                     Trump  + Honey + Inaug +  RAss + IraqKuwait + 
+                     Desert + Lehman + Sept11 + Mueller  + Impeach1 +
+                     Impeach2 + CovidP + CovidS + ObamaJan + BushJan +
+                     hostages, start=c(1978,4), end=c(2020,12), data=AppEcon.ts)
+```
+
+```{r}
+anova(ADL.1.2, ADL.1.1)
+```
+
